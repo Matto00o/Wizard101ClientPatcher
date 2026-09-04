@@ -12,11 +12,10 @@ It can also adjust the **mouse-wheel zoom speed**.
 * Customize mouse-wheel zoom speed
 * Automatically find the Wizard101 installation directory
 * Supports multiple common installation locations
-* Simple GUI
+* A simple GUI
 * Command-line support
 * Automatically creates a backup of the original game executable
 * Restore the original game values at any time
-* Standalone Windows executable — Python is not required
 
 ## Usage
 
@@ -110,7 +109,7 @@ If you are unsure about a downloaded release, you can verify its SHA-256 hash ag
 
 ## Compatibility
 
-The patcher is intended for the Windows version of Wizard101.
+The patcher is intended for both the Steam and standalone versions of the game.
 
 Game updates may require an updated version of the patcher. If the game executable has changed significantly, the patcher may refuse to modify it rather than applying an incorrect patch.
 
@@ -124,4 +123,4 @@ Use it at your own risk. Always keep a backup of your original game files.
 
 ## License
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License.
