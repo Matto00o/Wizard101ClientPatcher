@@ -1,15 +1,21 @@
-# Wizard101 Camera Zoom Patcher
+# Wizard101 Client Patcher
 
-A simple tool to increase the maximum camera distance in **Wizard101**.
+A small patcher for the **Wizard101** client. It can:
 
-Wizard101 has a relatively low default maximum camera distance. This tool allows you to increase it to a value of your choice, making it possible to zoom the camera further away from the player.
+* **Raise the maximum camera zoom distance.** Wizard101 caps how far the camera
+  can pull back; this raises the limit to a value of your choice.
+* **Change the mouse-wheel zoom speed**, to taste.
+* **Unlock the hidden languages.** Greek, Italian and Polish ship with the
+  client but are never listed in the settings screen.
 
-It can also adjust the **mouse-wheel zoom speed**.
+Every change is optional, located by pattern matching rather than by fixed
+offsets, and fully reversible from the automatic backup.
 
 ## Features
 
 * Increase or decrease the maximum camera distance
 * Customize mouse-wheel zoom speed
+* Unlock the hidden languages in the settings screen (Greek, Italian, Polish)
 * Automatically find the Wizard101 installation directory
 * Supports multiple common installation locations
 * A simple GUI
@@ -21,7 +27,7 @@ It can also adjust the **mouse-wheel zoom speed**.
 
 ### GUI
 
-Run `W101CameraZoomPatcher.exe` without any arguments.
+Run `W101ClientPatcher.exe` without any arguments.
 
 The tool will automatically look for the Wizard101 installation in several common locations.
 
@@ -29,15 +35,62 @@ You can then choose:
 
 * **Maximum camera distance**
 * **Zoom speed**
+* **Unlock hidden languages** (checkbox, off by default)
 
 The default values are:
 
-| Setting                 | Original | Default patch |
-| ----------------------- | -------: | ------------: |
-| Maximum camera distance |      425 |           800 |
-| Zoom divisor            |      3.5 |           3.5 |
+| Setting                 |  Original | Default patch |
+| ----------------------- | --------: | ------------: |
+| Maximum camera distance |       425 |           800 |
+| Zoom divisor            |       3.5 |           3.5 |
+| Languages listed        | 4 of 7 | 4 of 7 (7 if enabled) |
 
 For the zoom divisor, a **lower value makes the mouse-wheel zoom faster**, while a **higher value makes it slower**.
+
+The language unlock is **off by default**: it only happens if you tick the checkbox.
+
+### Running on Linux
+
+The only file published on the Releases page is a Windows `.exe`, but that is
+not a problem on Linux. Wizard101 already runs inside a Wine prefix there, and
+the patcher runs in exactly the same place: from **Lutris**, use the option that
+runs an executable inside the game's Wine prefix and point it at
+`W101ClientPatcher.exe`. This is tested and works.
+
+Running it inside the prefix is also the easier route, because the Windows
+install paths the patcher looks for — `C:\ProgramData\KingsIsle Entertainment\...`
+and friends — resolve to the prefix's `drive_c`, so the game is detected
+automatically just like on Windows.
+
+Make sure you use the **same prefix** the game is installed in, otherwise the
+patcher will not find it and you will have to browse to
+`WizardGraphicalClient.exe` yourself.
+
+#### Without Lutris: run the script directly
+
+Wine is only needed to run the prebuilt `.exe`, not to patch the game. The
+patcher just reads and writes a file, so you can skip the prefix entirely and
+run the Python script with your system Python, pointing it at the game
+executable wherever it lives. This works the same way on Linux and on Windows.
+
+```bash
+python w101_patch.py ~/Games/wizard101/drive_c/"ProgramData/KingsIsle Entertainment/Wizard101/Bin/WizardGraphicalClient.exe" --languages
+```
+
+Adjust the path to match your own prefix — under Lutris the prefix is whatever
+you set when installing the game, and the executable sits at the same
+`ProgramData\KingsIsle Entertainment\Wizard101\Bin` path inside its `drive_c`.
+
+Two things differ from running the `.exe` in the prefix:
+
+* There are no `C:\` paths to probe, so automatic detection does not apply and
+  you always give the path yourself.
+* Python 3 alone is enough for the command line, with no extra dependencies, but
+  the GUI also needs tkinter — `python3-tkinter` on Fedora, `python3-tk` on
+  Debian and Ubuntu. Without it the script says so and you can still use every
+  option from the command line.
+
+See [Command Line](#command-line) below for the full list of options.
 
 ### Selecting the game executable manually
 
@@ -56,48 +109,165 @@ The patcher modifies `WizardGraphicalClient.exe`, and selecting `Wizard101.exe` 
 Patch the game using the default settings:
 
 ```bash
-python w101_camzoom_patch.py WizardGraphicalClient.exe
+python w101_patch.py WizardGraphicalClient.exe
 ```
 
 Set a custom maximum camera distance:
 
 ```bash
-python w101_camzoom_patch.py WizardGraphicalClient.exe --max 1000
+python w101_patch.py WizardGraphicalClient.exe --max 1000
+```
+
+Also unlock the hidden languages:
+
+```bash
+python w101_patch.py WizardGraphicalClient.exe --languages
 ```
 
 Perform a dry run without modifying the game:
 
 ```bash
-python w101_camzoom_patch.py WizardGraphicalClient.exe --dry-run
+python w101_patch.py WizardGraphicalClient.exe --dry-run
 ```
 
-Restore the original Wizard101 values:
+Change the mouse-wheel zoom speed (lower is faster):
 
 ```bash
-python w101_camzoom_patch.py WizardGraphicalClient.exe --restore
+python w101_patch.py WizardGraphicalClient.exe --speed 2.5
+```
+
+Restore the original executable from the backup:
+
+```bash
+python w101_patch.py WizardGraphicalClient.exe --restore
 ```
 
 The same options are available when using the standalone `.exe`.
 
+#### All options
+
+| Option        | Effect                                                                 |
+| ------------- | ---------------------------------------------------------------------- |
+| `--max N`     | New maximum camera distance (default 800, stock 425)                    |
+| `--speed N`   | Zoom speed divisor; lower is faster (stock 3.5, left alone if omitted)  |
+| `--languages` | Also unlock the hidden languages (Greek, Italian, Polish)               |
+| `--dry-run`   | Show what would change without writing anything                         |
+| `--force`     | Proceed even if the constants do not hold their stock value             |
+| `--restore`   | Restore the executable from its `.bak` backup and exit                  |
+| `--gui`       | Open the graphical interface                                            |
+
+Options combine freely — `--max 1000 --speed 2.5 --languages` applies all three
+in a single pass. Running the patcher again is safe: anything already at the
+requested value is reported and skipped.
+
+To unlock only the languages and leave the camera at its stock value, pass the
+stock maximum explicitly:
+
+```bash
+python w101_patch.py WizardGraphicalClient.exe --max 425 --languages
+```
+
+## Hidden Languages
+
+Wizard101 ships with seven locales, but the language dropdown on the
+**advanced gameplay** settings tab only lists four of them. Greek, Italian and
+Polish are present in the client and never shown.
+
+The dropdown is filled from the global locale array:
+
+```text
+index:  0 INVALID  1 en-US  2 fr  3 de  4 es  5 el  6 it  7 pl
+```
+
+The array has eight elements, `INVALID` sits at index 0 and the loop starts at
+index 1 — but it only appends four entries. The compiler expressed that count
+as an offset from the array stride:
+
+```asm
+MOV  EBX, 0x20         ; stride (sizeof std::string), also the start index
+LEA  R13D, [RBX-0x1c]  ; 0x20 - 0x1c = 4 entries
+```
+
+Changing the displacement from `-0x1c` (`E4`) to `-0x19` (`E7`) gives
+`0x20 - 0x19 = 7`, so all seven real languages are listed. Index 0 is still
+never reached because the loop keeps starting at 1, and the arrow buttons cycle
+over however many entries were added.
+
+That is the entire patch: **one byte**. It is opt-in — pass `--languages` on the
+command line or tick the checkbox in the GUI. Like the camera constants, the
+site is located by pattern matching rather than by a hardcoded offset, and the
+patcher refuses to write anything if the pattern is missing or matches more than
+once.
+
+### Known limitation
+
+The selected language does not appear to be written to `preferences.xml`,
+`state.dat` or the Wine registry, yet the choice does survive across restarts.
+Where it is actually persisted has not been tracked down.
+
 ## Backup
 
-Before modifying the game, the patcher automatically creates a backup of the original `WizardGraphicalClient.exe`.
+Before modifying the game, the patcher automatically creates a backup of the
+original `WizardGraphicalClient.exe` next to it, as `WizardGraphicalClient.exe.bak`.
 
-This backup can be used to restore the original executable if needed.
+There is a single backup for the whole executable, so `--restore` puts back the
+untouched file and reverts **every** patch at once — camera, zoom speed and
+languages together. There is no way to undo just one of them; to change your
+mind about a single setting, restore and re-run the patcher with the options you
+want.
+
+> **After a game update, delete the old `.bak` first.**
+> An existing backup is never overwritten. If the game updates the executable
+> and you patch the new one, the `.bak` still holds the *previous* version, and
+> restoring it would put back an outdated client that the server will refuse.
+> Deleting the stale `.bak` before patching makes the next backup match the
+> version you are actually running.
 
 ## Game Updates
 
-Wizard101 updates may replace `WizardGraphicalClient.exe` with a new version.
+Wizard101 enforces mandatory updates — the server refuses a client that is out
+of sync — and updates replace `WizardGraphicalClient.exe` with a new version.
 
-If this happens, the camera zoom modification may be overwritten and the game will return to its original zoom settings.
+When that happens the patches are overwritten and the game returns to its
+original settings. Simply run the patcher again after the game has finished
+updating. Because every value is located by pattern matching instead of a fixed
+offset, the patcher generally keeps working across versions.
 
-Simply run the patcher again after the game has finished updating.
+The launcher also restores the original files, so once the game is patched,
+start it from a shortcut that points **directly at
+`WizardGraphicalClient.exe`** instead of going through the launcher. Run the
+launcher when you actually need to update, then re-apply the patches.
 
 ## Download
 
 Download the latest version from the **[Releases](../../releases)** page.
 
-The standalone executable does not require Python or any additional dependencies.
+The standalone executable does not require Python or any additional
+dependencies. Only the Windows `.exe` is published; on Linux, run that same file
+inside the game's Wine prefix — see [Running on Linux](#running-on-linux).
+
+## Building from source
+
+The release executable is produced with [PyInstaller](https://pyinstaller.org)
+from the included spec file:
+
+```bash
+pyinstaller W101ClientPatcher.spec
+```
+
+Two things to know before building:
+
+* **PyInstaller does not cross-compile.** It bundles the interpreter of the
+  machine it runs on, so a Windows `.exe` has to be built on Windows (or under
+  Wine). Running it on Linux produces a Linux binary. Only the Windows build is
+  published, since it also covers Linux through the game's own Wine prefix.
+* **tkinter must be present at build time**, otherwise the GUI is silently left
+  out and the result only works from the command line. The official Windows
+  Python includes it; on Linux it is usually a separate package, such as
+  `python3-tkinter` on Fedora or `python3-tk` on Debian and Ubuntu.
+
+The script itself has no dependencies beyond the standard library, so running it
+with `python w101_patch.py` needs no installation at all.
 
 ## Antivirus Warnings
 
@@ -111,7 +281,19 @@ If you are unsure about a downloaded release, you can verify its SHA-256 hash ag
 
 The patcher is intended for both the Steam and standalone versions of the game.
 
-Game updates may require an updated version of the patcher. If the game executable has changed significantly, the patcher may refuse to modify it rather than applying an incorrect patch.
+It targets the Windows build of `WizardGraphicalClient.exe` and reads and writes
+that file directly, so the Python script runs anywhere Python does — including
+Linux, where it patches a Wizard101 installed under Wine or Proton just as well.
+The prebuilt release is a Windows executable.
+
+Automatic detection probes the usual Windows install paths. Those resolve
+normally when the patcher itself runs inside the Wine prefix, so detection works
+there; running the Python script natively on Linux means selecting
+`WizardGraphicalClient.exe` yourself.
+
+Game updates may require an updated version of the patcher. If the game
+executable has changed significantly, the patcher refuses to modify it rather
+than applying an incorrect patch.
 
 ## Disclaimer
 

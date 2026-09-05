@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-w101_camzoom_patch.py
+w101_patch.py
 
 Raises the maximum camera distance in Wizard101 (WizardGraphicalClient.exe).
 
@@ -12,12 +12,25 @@ chosen by the user. Default value is 425, default NEW value is 800.
 It's also possible to modify the mouse wheel speed divisor to make
 zoom faster/slower, default value is 3.5. Higher number makes zoom slower.
 
+Optionally it can also unlock the languages that the settings screen
+hides (Greek, Italian and Polish) -- see LANGUAGE UNLOCK below.
+
 Run with no arguments for a small GUI, or from the command line:
 
-    python w101_camzoom_patch.py WizardGraphicalClient.exe
-    python w101_camzoom_patch.py WizardGraphicalClient.exe --max 1000
-    python w101_camzoom_patch.py WizardGraphicalClient.exe --dry-run
-    python w101_camzoom_patch.py WizardGraphicalClient.exe --restore
+    python w101_patch.py WizardGraphicalClient.exe
+    python w101_patch.py WizardGraphicalClient.exe --max 1000
+    python w101_patch.py WizardGraphicalClient.exe --languages
+    python w101_patch.py WizardGraphicalClient.exe --dry-run
+    python w101_patch.py WizardGraphicalClient.exe --restore
+
+NOTE ON GAME UPDATES
+--------------------
+Wizard101 forces clients to update -- the server refuses a client that
+is out of sync -- and the launcher restores the original files, so every
+patch here has to be re-applied after an update and the client has to be
+started from a shortcut that goes straight to the executable instead of
+through the launcher. That is also why every constant is located by
+pattern matching rather than by a hardcoded offset.
 """
 
 import argparse
@@ -68,6 +81,42 @@ MAXBRANCH_PATTERN = "48 8D 05 ?? ?? ?? ?? F3 0F 10 10 F3 0F 11 11"
 #
 SPEED_PATTERN = "0F 5B C0 F3 0F 5E 05 ?? ?? ?? ??"
 VANILLA_SPEED_DIV = 3.5
+
+# ---------------------------------------------------------------------------
+# LANGUAGE UNLOCK
+# ---------------------------------------------------------------------------
+#
+# SettingsWindow builds the language dropdown on the advanced-gameplay tab by
+# appending a fixed number of entries from the global locale array:
+#
+#     array index:  0 INVALID  1 en-US  2 fr  3 de  4 es  5 el  6 it  7 pl
+#
+# The array holds eight elements, INVALID sits at index 0 and the loop starts
+# at 1, but it only adds four entries -- which is exactly why Greek, Italian
+# and Polish never show up. MSVC compiled the counter as an offset from the
+# array stride:
+#
+#     bb 20 00 00 00    MOV  EBX, 0x20         ; stride, and start index 1
+#     44 8d 6b e4       LEA  R13D, [RBX-0x1c]  ; 0x20 - 0x1c = 4 entries
+#
+# Changing the displacement from -0x1c (E4) to -0x19 (E7) gives 0x20 - 0x19 =
+# 7, so all seven real languages are listed. Index 0 (INVALID) is still never
+# reached because the loop keeps starting at 1, and the arrow buttons cycle
+# over however many entries were added, so nothing else needs touching.
+#
+# That is the whole patch: one byte.
+#
+# Known limitation: the chosen language is not written to preferences.xml,
+# state.dat or the Wine registry, yet the choice does survive -- where it is
+# persisted has not been tracked down.
+#
+LANG_PATTERN = bytes.fromhex("bb20000000448d6be4")
+LANG_DISP_INDEX = 8        # position of the displacement byte within the pattern
+LANG_OLD_DISP = 0xE4       # -0x1c -> 4 entries
+LANG_NEW_DISP = 0xE7       # -0x19 -> 7 entries
+LANG_STRIDE = 0x20         # sizeof(std::string), also the starting offset
+LANGUAGES = ["INVALID", "en-US", "fr", "de", "es", "el", "it", "pl"]
+LANG_UNLOCKED = "Greek, Italian and Polish"
 
 # Common install locations, used to prefill the GUI file field.
 CANDIDATE_PATHS = [
@@ -236,6 +285,43 @@ def locate(pe, data):
     return found
 
 
+def lang_entries_for(disp):
+    """Decode a signed disp8 into the resulting entry count."""
+    signed = disp - 256 if disp > 127 else disp
+    return LANG_STRIDE + signed
+
+
+def find_lang_sites(data, disp):
+    """Offsets of the displacement byte for every match with that value."""
+    needle = LANG_PATTERN[:LANG_DISP_INDEX] + bytes([disp])
+    sites, pos = [], 0
+    while True:
+        pos = data.find(needle, pos)
+        if pos == -1:
+            return sites
+        sites.append(pos + LANG_DISP_INDEX)
+        pos += 1
+
+
+def locate_language(data):
+    """Return (file_offset, current_disp) for the language entry counter."""
+    for disp in (LANG_OLD_DISP, LANG_NEW_DISP):
+        sites = find_lang_sites(data, disp)
+        if len(sites) > 1:
+            raise RuntimeError(
+                f"Found {len(sites)} matches for the language counter -- "
+                "ambiguous, aborting.\nOffsets: "
+                + ", ".join(f"{h:#x}" for h in sites)
+            )
+        if sites:
+            return sites[0], disp
+    raise RuntimeError(
+        "Language counter pattern not found. The executable may be from a "
+        "very different version, already modified, or not the game client "
+        "at all."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core operations (shared by CLI and GUI)
 # ---------------------------------------------------------------------------
@@ -243,7 +329,7 @@ def locate(pe, data):
 REPORT_ORDER = ["max_threshold", "max_value", "min_threshold", "min_value", "speed_div"]
 
 
-def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
+def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
               dry_run=False, force=False, log=print):
     """Analyze and optionally patch the executable. Returns True on success."""
     exe = Path(exe)
@@ -261,6 +347,16 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
         log(f"[!] {e}")
         return False
 
+    lang = None
+    if languages:
+        try:
+            lang = locate_language(data)
+        except RuntimeError as e:
+            log(f"[!] {e}")
+            log("    Nothing was written. Re-run without the language option "
+                "to patch the camera only.")
+            return False
+
     log(f"[*] ImageBase : {pe.image_base:#x}")
     log(f"[*] Clamp found at VA {found['clamp_va']:#x}")
     log("")
@@ -270,6 +366,10 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
         if key in found:
             va, off = found[key]
             log(f"    {key:<17} {va:#012x}  {off:#010x}     {read_f32(data, off):g}")
+    if lang is not None:
+        off, disp = lang
+        log(f"    {'language_count':<17} {pe.off_to_va(off):#012x}  {off:#010x}"
+            f"     {lang_entries_for(disp)} entries")
     log("")
 
     # --- validate ---
@@ -293,6 +393,15 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
             if abs(cur - VANILLA_MIN) > FLOAT_TOL:
                 log(f"[!] Warning: {key} is {cur:g} instead of {VANILLA_MIN:g}.")
 
+    byte_targets = []
+    if lang is not None:
+        off, disp = lang
+        if disp == LANG_NEW_DISP:
+            log(f"[*] The language list already shows "
+                f"{lang_entries_for(disp)} entries: nothing to do.")
+        else:
+            byte_targets.append(("language_count", off, disp, LANG_NEW_DISP))
+
     if speed is not None:
         if "speed_div" not in found:
             log("[!] Zoom speed divisor not located: speed setting ignored.")
@@ -301,9 +410,13 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
             return False
         else:
             off = found["speed_div"][1]
-            targets.append(("speed_div", off, read_f32(data, off), speed))
+            cur = read_f32(data, off)
+            if abs(cur - speed) <= FLOAT_TOL:
+                log(f"[*] speed_div is already {cur:g}: nothing to do.")
+            else:
+                targets.append(("speed_div", off, cur, speed))
 
-    if not targets:
+    if not targets and not byte_targets:
         log("[=] No changes needed.")
         return True
 
@@ -312,6 +425,10 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
         old_b = struct.pack("<f", old).hex(" ").upper()
         new_b = struct.pack("<f", new).hex(" ").upper()
         log(f"      {key:<17} @ {off:#010x}   {old:g} -> {new:g}   [{old_b}] -> [{new_b}]")
+    for key, off, old, new in byte_targets:
+        log(f"      {key:<17} @ {off:#010x}   "
+            f"{lang_entries_for(old)} -> {lang_entries_for(new)} entries   "
+            f"[{old:02X}] -> [{new:02X}]")
     log("")
 
     if dry_run:
@@ -333,6 +450,8 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
     # --- write ---
     for _key, off, _old, new in targets:
         struct.pack_into("<f", data, off, new)
+    for _key, off, _old, new in byte_targets:
+        data[off] = new
 
     try:
         exe.write_bytes(bytes(data))
@@ -344,7 +463,16 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None,
         log(f"[!] Write failed: {e}")
         return False
 
-    log(f"[+] Done. Maximum camera distance: {VANILLA_MAX:g} -> {new_max:g}")
+    was = {key: old for key, _off, old, _new in targets}
+    if was.keys() & {"max_threshold", "max_value"}:
+        old_max = was.get("max_threshold", was.get("max_value"))
+        log(f"[+] Done. Maximum camera distance: {old_max:g} -> {new_max:g}")
+    if "speed_div" in was:
+        log(f"[+] Done. Zoom speed divisor: {was['speed_div']:g} -> {speed:g}")
+    if byte_targets:
+        log(f"[+] Done. The settings screen now lists all "
+            f"{lang_entries_for(LANG_NEW_DISP)} languages: "
+            f"{', '.join(LANGUAGES[1:])}.")
     return True
 
 
@@ -378,13 +506,14 @@ def launch_gui():
         return 1
 
     root = tk.Tk()
-    root.title("Wizard101 Camera Zoom Patcher")
-    root.geometry("760x200")
-    root.minsize(700, 200)
+    root.title("Wizard101 Client Patcher")
+    root.geometry("760x230")
+    root.minsize(700, 230)
 
     path_var = tk.StringVar()
     max_var = tk.StringVar(value=str(int(DEFAULT_NEW_MAX)))
     speed_var = tk.StringVar()
+    lang_var = tk.BooleanVar(value=False)
     force_var = tk.BooleanVar(value=False)
 
     for candidate in CANDIDATE_PATHS:
@@ -415,7 +544,13 @@ def launch_gui():
     tk.Entry(frm_opt, textvariable=max_var, width=8).pack(side="left", padx=(4, 16))
     tk.Label(frm_opt, text=f"Zoom speed divisor (stock {VANILLA_SPEED_DIV:g}, blank = leave):").pack(side="left")
     tk.Entry(frm_opt, textvariable=speed_var, width=8).pack(side="left", padx=4)
-    tk.Checkbutton(frm_opt, text="Force", variable=force_var).pack(side="left", padx=12)
+
+    frm_opt2 = tk.Frame(root, padx=10)
+    frm_opt2.pack(fill="x", pady=(4, 0))
+    tk.Checkbutton(frm_opt2,
+                   text=f"Unlock hidden languages ({LANG_UNLOCKED})",
+                   variable=lang_var).pack(side="left")
+    tk.Checkbutton(frm_opt2, text="Force", variable=force_var).pack(side="left", padx=12)
 
     # --- status line (always visible) ---
     status_var = tk.StringVar(value="Select the game executable, then click Analyze or Apply patch.")
@@ -444,11 +579,11 @@ def launch_gui():
         if show:
             log_frame.pack(fill="both", expand=True, pady=(0, 10))
             btn_log.config(text="Hide details")
-            root.geometry("760x560")
+            root.geometry("760x590")
         else:
             log_frame.pack_forget()
             btn_log.config(text="Show details")
-            root.geometry("760x200")
+            root.geometry("760x230")
 
     def log(msg=""):
         log_box.insert("end", str(msg) + "\n")
@@ -489,19 +624,23 @@ def launch_gui():
         if args is None:
             return
         path, new_max, speed = args
+        languages = lang_var.get()
+        lang_note = " Hidden languages unlocked." if languages else ""
         log_box.delete("1.0", "end")
         set_status("Working...", None)
-        ok = run_patch(path, new_max=new_max, speed=speed,
+        ok = run_patch(path, new_max=new_max, speed=speed, languages=languages,
                        dry_run=dry_run, force=force_var.get(), log=log)
         if not ok:
             set_status("Something went wrong -- see details below.", False)
             set_log_visible(True)
         elif dry_run:
             set_status(f"Looks good. Nothing was written. "
-                       f"Apply patch would set the max distance to {new_max:g}.", True)
+                       f"Apply patch would set the max distance to {new_max:g}."
+                       + lang_note, True)
         else:
             set_status(f"Patched. Maximum camera distance is now {new_max:g} "
-                       f"(was {VANILLA_MAX:g}). A .bak backup was saved.", True)
+                       f"(was {VANILLA_MAX:g})." + lang_note +
+                       " A .bak backup was saved.", True)
 
     def do_restore():
         path = path_var.get().strip()
@@ -554,6 +693,9 @@ def main():
                          f"stock {VANILLA_MAX:g})")
     ap.add_argument("--speed", type=float, default=None,
                     help=f"zoom speed divisor; lower is faster (stock {VANILLA_SPEED_DIV:g})")
+    ap.add_argument("--languages", action="store_true",
+                    help="also unlock the languages hidden in the settings "
+                         f"screen ({LANG_UNLOCKED})")
     ap.add_argument("--dry-run", action="store_true",
                     help="show what would change without writing anything")
     ap.add_argument("--force", action="store_true",
@@ -571,6 +713,7 @@ def main():
         return 0 if run_restore(args.exe) else 1
 
     ok = run_patch(args.exe, new_max=args.max, speed=args.speed,
+                   languages=args.languages,
                    dry_run=args.dry_run, force=args.force)
     if ok and not args.dry_run:
         print(f'    To undo: python {Path(sys.argv[0]).name} "{args.exe}" --restore')
