@@ -8,8 +8,7 @@ A small patcher for the **Wizard101** client. It can:
 * **Unlock the hidden languages.** Greek, Italian and Polish ship with the
   client but are never listed in the settings screen.
 
-Every change is optional, located by pattern matching rather than by fixed
-offsets, and fully reversible from the automatic backup.
+Every change is optional and fully reversible from the automatic backup.
 
 ## Features
 
@@ -169,41 +168,16 @@ python w101_patch.py WizardGraphicalClient.exe --max 425 --languages
 
 ## Hidden Languages
 
-Wizard101 ships with seven locales, but the language dropdown on the
+Wizard101 ships with seven languages, but the dropdown on the
 **advanced gameplay** settings tab only lists four of them. Greek, Italian and
 Polish are present in the client and never shown.
 
-The dropdown is filled from the global locale array:
+With the language option enabled, all seven show up in that dropdown and the
+arrow buttons cycle through them as usual. Pick the one you want like any other
+setting; the choice is remembered between sessions.
 
-```text
-index:  0 INVALID  1 en-US  2 fr  3 de  4 es  5 el  6 it  7 pl
-```
-
-The array has eight elements, `INVALID` sits at index 0 and the loop starts at
-index 1 — but it only appends four entries. The compiler expressed that count
-as an offset from the array stride:
-
-```asm
-MOV  EBX, 0x20         ; stride (sizeof std::string), also the start index
-LEA  R13D, [RBX-0x1c]  ; 0x20 - 0x1c = 4 entries
-```
-
-Changing the displacement from `-0x1c` (`E4`) to `-0x19` (`E7`) gives
-`0x20 - 0x19 = 7`, so all seven real languages are listed. Index 0 is still
-never reached because the loop keeps starting at 1, and the arrow buttons cycle
-over however many entries were added.
-
-That is the entire patch: **one byte**. It is opt-in — pass `--languages` on the
-command line or tick the checkbox in the GUI. Like the camera constants, the
-site is located by pattern matching rather than by a hardcoded offset, and the
-patcher refuses to write anything if the pattern is missing or matches more than
-once.
-
-### Known limitation
-
-The selected language does not appear to be written to `preferences.xml`,
-`state.dat` or the Wine registry, yet the choice does survive across restarts.
-Where it is actually persisted has not been tracked down.
+This is off by default: pass `--languages` on the command line, or tick
+**Unlock hidden languages** in the GUI.
 
 ## Backup
 
@@ -230,8 +204,8 @@ of sync — and updates replace `WizardGraphicalClient.exe` with a new version.
 
 When that happens the patches are overwritten and the game returns to its
 original settings. Simply run the patcher again after the game has finished
-updating. Because every value is located by pattern matching instead of a fixed
-offset, the patcher generally keeps working across versions.
+updating. The patcher is built to keep working across game versions, so an
+update does not normally require a new release of this tool.
 
 The launcher also restores the original files, so once the game is patched,
 start it from a shortcut that points **directly at
