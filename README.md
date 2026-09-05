@@ -44,7 +44,6 @@ The default values are:
 | ----------------------- | --------: | ------------: |
 | Maximum camera distance |       425 |           800 |
 | Zoom divisor            |       3.5 |           3.5 |
-| Languages listed        | 4 of 7 | 4 of 7 (7 if enabled) |
 
 For the zoom divisor, a **lower value makes the mouse-wheel zoom faster**, while a **higher value makes it slower**.
 
