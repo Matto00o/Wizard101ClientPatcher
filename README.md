@@ -5,8 +5,10 @@ A small patcher for the **Wizard101** client. It can:
 * **Raise the maximum camera zoom distance.** Wizard101 caps how far the camera
   can pull back; this raises the limit to a value of your choice.
 * **Change the mouse-wheel zoom speed**, to taste.
-* **Unlock the hidden languages.** Greek, Italian and Polish ship with the
-  client but are never listed in the settings screen.
+* **Unlock the hidden languages. (only text for now)** Greek, Italian and Polish ship with the
+  client but are never listed in the settings screen. (!IMPORTANT: this function was made
+  and tested on the North American game version. I have not tried it on the EU version,
+  but it probably will NOT work.)
 
 Every change is optional and fully reversible from the automatic backup.
 
@@ -14,7 +16,7 @@ Every change is optional and fully reversible from the automatic backup.
 
 * Increase or decrease the maximum camera distance
 * Customize mouse-wheel zoom speed
-* Unlock the hidden languages in the settings screen (Greek, Italian, Polish)
+* Unlock the hidden languages in the settings screen (Greek, Italian, Polish, only text)
 * Automatically find the Wizard101 installation directory
 * Supports multiple common installation locations
 * A simple GUI
@@ -73,7 +75,7 @@ run the Python script with your system Python, pointing it at the game
 executable wherever it lives. This works the same way on Linux and on Windows.
 
 ```bash
-python w101_patch.py ~/Games/wizard101/drive_c/"ProgramData/KingsIsle Entertainment/Wizard101/Bin/WizardGraphicalClient.exe" --languages
+python w101_patch.py "~/Games/wizard101/drive_c/ProgramData/KingsIsle Entertainment/Wizard101/Bin/WizardGraphicalClient.exe" --languages
 ```
 
 Adjust the path to match your own prefix — under Lutris the prefix is whatever
@@ -168,13 +170,17 @@ python w101_patch.py WizardGraphicalClient.exe --max 425 --languages
 
 ## Hidden Languages
 
-Wizard101 ships with seven languages, but the dropdown on the
-**advanced gameplay** settings tab only lists four of them. Greek, Italian and
+Wizard101 shipped with seven languages, but now the 
+settings tab only lists four of them. Greek, Italian and
 Polish are present in the client and never shown.
 
 With the language option enabled, all seven show up in that dropdown and the
 arrow buttons cycle through them as usual. Pick the one you want like any other
 setting; the choice is remembered between sessions.
+
+This only enables text translations, as the dubs for the three missing languages
+are not present in the game files. I'm still not sure if it's possible to 
+somehow add dubs as well.
 
 This is off by default: pass `--languages` on the command line, or tick
 **Unlock hidden languages** in the GUI.
