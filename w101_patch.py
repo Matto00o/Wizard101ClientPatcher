@@ -34,6 +34,7 @@ pattern matching rather than by a hardcoded offset.
 """
 
 import argparse
+import os
 import shutil
 import struct
 import sys
@@ -118,12 +119,51 @@ LANG_STRIDE = 0x20         # sizeof(std::string), also the starting offset
 LANGUAGES = ["INVALID", "en-US", "fr", "de", "es", "el", "it", "pl"]
 LANG_UNLOCKED = "Greek, Italian and Polish"
 
-# Common install locations, used to prefill the GUI file field.
-CANDIDATE_PATHS = [
-    r"C:\ProgramData\KingsIsle Entertainment\Wizard101\Bin\WizardGraphicalClient.exe",
-    r"C:\Program Files (x86)\Steam\steamapps\common\Wizard101\Bin\WizardGraphicalClient.exe",
-    r"C:\Program Files\KingsIsle Entertainment\Wizard101\Bin\WizardGraphicalClient.exe",
+# Where the game usually sits, relative to the root of a Windows drive.
+GAME_SUBPATHS = [
+    ("ProgramData", "KingsIsle Entertainment", "Wizard101", "Bin",
+     "WizardGraphicalClient.exe"),
+    ("Program Files (x86)", "Steam", "steamapps", "common", "Wizard101", "Bin",
+     "WizardGraphicalClient.exe"),
+    ("Program Files", "KingsIsle Entertainment", "Wizard101", "Bin",
+     "WizardGraphicalClient.exe"),
 ]
+
+# Running natively on Linux there is no C: drive to probe, so look inside the
+# usual Wine and Proton prefixes instead -- the layout under drive_c is the
+# same one Windows would have.
+PREFIX_GLOBS = [
+    "Games/*/drive_c",
+    "Games/*/prefix/drive_c",
+    "Games/*/*/drive_c",
+    ".wine/drive_c",
+    ".local/share/lutris/prefixes/*/drive_c",
+    ".var/app/net.lutris.Lutris/data/lutris/prefixes/*/drive_c",
+    ".local/share/Steam/steamapps/compatdata/*/pfx/drive_c",
+    ".steam/steam/steamapps/compatdata/*/pfx/drive_c",
+    ".var/app/com.valvesoftware.Steam/.local/share/Steam/steamapps/compatdata/*/pfx/drive_c",
+]
+
+
+def drive_roots():
+    """Yield the directories that stand in for a Windows drive root."""
+    if os.name == "nt":
+        yield Path("C:/")
+        return
+    home = Path.home()
+    for pattern in PREFIX_GLOBS:
+        yield from sorted(home.glob(pattern))
+
+
+def find_game_paths():
+    """Every game executable found in a usual install location."""
+    hits = []
+    for root in drive_roots():
+        for parts in GAME_SUBPATHS:
+            candidate = root.joinpath(*parts)
+            if candidate.is_file() and candidate not in hits:
+                hits.append(candidate)
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -330,8 +370,26 @@ REPORT_ORDER = ["max_threshold", "max_value", "min_threshold", "min_value", "spe
 
 
 def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
-              dry_run=False, force=False, log=print):
-    """Analyze and optionally patch the executable. Returns True on success."""
+              dry_run=False, force=False, log=print, summary=None):
+    """Analyze and optionally patch the executable. Returns True on success.
+
+    If `summary` is a dict, it is filled in with what actually happened
+    (as opposed to what was requested), so a caller can report the real
+    outcome instead of echoing back its own arguments:
+
+        camera_changed, old_max     -- max distance did / would change
+        speed_changed, old_speed    -- speed divisor did / would change
+        languages_changed           -- language count did / would change
+        languages_already_unlocked  -- languages were requested but already unlocked
+        backup_created               -- a new .bak was written this run
+    """
+    if summary is not None:
+        summary.clear()
+        summary.update(camera_changed=False, old_max=None,
+                        speed_changed=False, old_speed=None,
+                        languages_changed=False, languages_already_unlocked=False,
+                        backup_created=False)
+
     exe = Path(exe)
     if not exe.is_file():
         log(f"[!] File not found: {exe}")
@@ -377,14 +435,13 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
     for key in ("max_threshold", "max_value"):
         va, off = found[key]
         cur = read_f32(data, off)
-        if abs(cur - VANILLA_MAX) > FLOAT_TOL:
-            if abs(cur - new_max) <= FLOAT_TOL:
-                log(f"[*] {key} is already {cur:g}: nothing to do.")
-                continue
-            if not force:
-                log(f"[!] {key} is {cur:g}, expected {VANILLA_MAX:g}. "
-                    f"It may already be modified. Use force to proceed anyway.")
-                return False
+        if abs(cur - new_max) <= FLOAT_TOL:
+            log(f"[*] {key} is already {cur:g}: nothing to do.")
+            continue
+        if abs(cur - VANILLA_MAX) > FLOAT_TOL and not force:
+            log(f"[!] {key} is {cur:g}, expected {VANILLA_MAX:g}. "
+                f"It may already be modified. Use force to proceed anyway.")
+            return False
         targets.append((key, off, cur, new_max))
 
     for key in ("min_threshold", "min_value"):
@@ -399,6 +456,8 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         if disp == LANG_NEW_DISP:
             log(f"[*] The language list already shows "
                 f"{lang_entries_for(disp)} entries: nothing to do.")
+            if summary is not None:
+                summary["languages_already_unlocked"] = True
         else:
             byte_targets.append(("language_count", off, disp, LANG_NEW_DISP))
 
@@ -431,6 +490,19 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
             f"[{old:02X}] -> [{new:02X}]")
     log("")
 
+    # These changes are real whether or not they get written -- a dry run
+    # reports the same "would happen" facts a real run would apply.
+    was = {key: old for key, _off, old, _new in targets}
+    if summary is not None:
+        if was.keys() & {"max_threshold", "max_value"}:
+            summary["camera_changed"] = True
+            summary["old_max"] = was.get("max_threshold", was.get("max_value"))
+        if "speed_div" in was:
+            summary["speed_changed"] = True
+            summary["old_speed"] = was["speed_div"]
+        if byte_targets:
+            summary["languages_changed"] = True
+
     if dry_run:
         log("[=] Dry run: nothing was written.")
         return True
@@ -444,6 +516,8 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
             log(f"[!] Could not create backup: {e}")
             return False
         log(f"[+] Backup created: {backup.name}")
+        if summary is not None:
+            summary["backup_created"] = True
     else:
         log(f"[*] Backup already present: {backup.name} (not overwritten)")
 
@@ -463,7 +537,6 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         log(f"[!] Write failed: {e}")
         return False
 
-    was = {key: old for key, _off, old, _new in targets}
     if was.keys() & {"max_threshold", "max_value"}:
         old_max = was.get("max_threshold", was.get("max_value"))
         log(f"[+] Done. Maximum camera distance: {old_max:g} -> {new_max:g}")
@@ -516,10 +589,9 @@ def launch_gui():
     lang_var = tk.BooleanVar(value=False)
     force_var = tk.BooleanVar(value=False)
 
-    for candidate in CANDIDATE_PATHS:
-        if Path(candidate).is_file():
-            path_var.set(candidate)
-            break
+    found_games = find_game_paths()
+    if found_games:
+        path_var.set(str(found_games[0]))
 
     # --- file row ---
     frm_file = tk.Frame(root, padx=10, pady=8)
@@ -625,22 +697,46 @@ def launch_gui():
             return
         path, new_max, speed = args
         languages = lang_var.get()
-        lang_note = " Hidden languages unlocked." if languages else ""
         log_box.delete("1.0", "end")
         set_status("Working...", None)
+        summary = {}
         ok = run_patch(path, new_max=new_max, speed=speed, languages=languages,
-                       dry_run=dry_run, force=force_var.get(), log=log)
+                       dry_run=dry_run, force=force_var.get(), log=log,
+                       summary=summary)
         if not ok:
             set_status("Something went wrong -- see details below.", False)
             set_log_visible(True)
+            return
+
+        # Build the status line from what actually happened, not from what
+        # was merely requested -- an unticked option, an already-applied
+        # patch, or a no-op run must not be reported as a change.
+        changes, notes = [], []
+        if summary["camera_changed"]:
+            verb = "would become" if dry_run else "is now"
+            changes.append(f"Max distance {verb} {new_max:g} "
+                           f"(was {summary['old_max']:g}).")
+        if summary["speed_changed"]:
+            verb = "would become" if dry_run else "is now"
+            changes.append(f"Zoom speed divisor {verb} {speed:g} "
+                           f"(was {summary['old_speed']:g}).")
+        if summary["languages_changed"]:
+            changes.append("Hidden languages would be unlocked." if dry_run
+                           else "Hidden languages unlocked.")
+        elif languages and summary["languages_already_unlocked"]:
+            notes.append("Hidden languages were already unlocked.")
+
+        if not changes:
+            tail = (" " + " ".join(notes)) if notes else ""
+            set_status("Nothing to do: the executable already matches "
+                       "everything you asked for." + tail, True)
         elif dry_run:
-            set_status(f"Looks good. Nothing was written. "
-                       f"Apply patch would set the max distance to {new_max:g}."
-                       + lang_note, True)
+            set_status("Looks good. Nothing was written. "
+                       + " ".join(changes + notes), True)
         else:
-            set_status(f"Patched. Maximum camera distance is now {new_max:g} "
-                       f"(was {VANILLA_MAX:g})." + lang_note +
-                       " A .bak backup was saved.", True)
+            if summary["backup_created"]:
+                notes.append("A .bak backup was saved.")
+            set_status("Patched. " + " ".join(changes + notes), True)
 
     def do_restore():
         path = path_var.get().strip()

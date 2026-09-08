@@ -66,29 +66,32 @@ Make sure you use the **same prefix** the game is installed in, otherwise the
 patcher will not find it and you will have to browse to
 `WizardGraphicalClient.exe` yourself.
 
-#### Without Lutris: run the script directly
+#### Without Lutris: run it natively
 
 Wine is only needed to run the prebuilt `.exe`, not to patch the game. The
 patcher just reads and writes a file, so you can skip the prefix entirely and
-run the Python script with your system Python, pointing it at the game
-executable wherever it lives. This works the same way on Linux and on Windows.
+run it natively on Linux — either the Python script, or a Linux build of the
+patcher if one is published with the release.
+
+Automatic detection works here too: when there is no `C:` drive to probe, the
+patcher looks inside the usual Wine and Proton prefixes instead — `~/Games`,
+`~/.wine`, the Lutris prefix directory (including the Flatpak one) and Steam's
+`compatdata` — for the same layout Windows would have under `drive_c`.
+
+If your prefix lives somewhere unusual, pass the path yourself:
 
 ```bash
-python w101_patch.py "~/Games/wizard101/drive_c/ProgramData/KingsIsle Entertainment/Wizard101/Bin/WizardGraphicalClient.exe" --languages
+python w101_patch.py ~/Games/Wizard101NA/prefix/drive_c/"ProgramData/KingsIsle Entertainment/Wizard101/Bin/WizardGraphicalClient.exe" --languages
 ```
 
-Adjust the path to match your own prefix — under Lutris the prefix is whatever
-you set when installing the game, and the executable sits at the same
-`ProgramData\KingsIsle Entertainment\Wizard101\Bin` path inside its `drive_c`.
+Note where the quotes go: the `~` has to stay outside them or the shell will
+not expand it, while the spaces inside the path do need quoting.
 
-Two things differ from running the `.exe` in the prefix:
-
-* There are no `C:\` paths to probe, so automatic detection does not apply and
-  you always give the path yourself.
-* Python 3 alone is enough for the command line, with no extra dependencies, but
-  the GUI also needs tkinter — `python3-tkinter` on Fedora, `python3-tk` on
-  Debian and Ubuntu. Without it the script says so and you can still use every
-  option from the command line.
+One thing still differs from running the `.exe` in the prefix: Python 3 alone is
+enough for the command line, with no extra dependencies, but the GUI also needs
+tkinter — `python3-tkinter` on Fedora, `python3-tk` on Debian and Ubuntu.
+Without it the script says so and you can still use every option from the
+command line.
 
 See [Command Line](#command-line) below for the full list of options.
 
@@ -237,9 +240,9 @@ pyinstaller W101ClientPatcher.spec
 Two things to know before building:
 
 * **PyInstaller does not cross-compile.** It bundles the interpreter of the
-  machine it runs on, so a Windows `.exe` has to be built on Windows (or under
-  Wine). Running it on Linux produces a Linux binary. Only the Windows build is
-  published, since it also covers Linux through the game's own Wine prefix.
+  machine it runs on: the same spec file produces a Windows `.exe` when run on
+  Windows and a native Linux binary when run on Linux, so each platform's build
+  has to be made on that platform.
 * **tkinter must be present at build time**, otherwise the GUI is silently left
   out and the result only works from the command line. The official Windows
   Python includes it; on Linux it is usually a separate package, such as
