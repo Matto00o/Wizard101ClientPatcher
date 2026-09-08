@@ -51,6 +51,8 @@ The language unlock is **off by default**: it only happens if you tick the check
 
 ### Running on Linux
 
+**LINUX VERSION RELEASED, YOU NO LONGER NEED TO RUN IT INSIDE PROTON PREFIX**
+
 The only file published on the Releases page is a Windows `.exe`, but that is
 not a problem on Linux. Wizard101 already runs inside a Wine prefix there, and
 the patcher runs in exactly the same place: from **Lutris**, use the option that
