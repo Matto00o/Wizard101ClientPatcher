@@ -9,6 +9,8 @@ A small patcher for the **Wizard101** client. It can:
   client but are never listed in the settings screen. (!IMPORTANT: this function was made
   and tested on the North American game version. I have not tried it on the EU version,
   but it probably will NOT work.)
+* **Keep the in-game patcher working** when you play in one of those languages,
+  so the game stops closing itself in the middle of a session.
 
 Every change is optional and fully reversible from the automatic backup.
 
@@ -17,6 +19,7 @@ Every change is optional and fully reversible from the automatic backup.
 * Increase or decrease the maximum camera distance
 * Customize mouse-wheel zoom speed
 * Unlock the hidden languages in the settings screen (Greek, Italian, Polish, only text)
+* Keep the in-game patcher working in those languages
 * Automatically find the Wizard101 installation directory
 * Supports multiple common installation locations
 * A simple GUI
@@ -37,6 +40,7 @@ You can then choose:
 * **Maximum camera distance**
 * **Zoom speed**
 * **Unlock hidden languages** (checkbox, off by default)
+* **Keep the in-game patcher working** (checkbox, on by default)
 
 The default values are:
 
@@ -156,6 +160,8 @@ The same options are available when using the standalone `.exe`.
 | `--max N`     | New maximum camera distance (default 800, stock 425)                    |
 | `--speed N`   | Zoom speed divisor; lower is faster (stock 3.5, left alone if omitted)  |
 | `--languages` | Also unlock the hidden languages (Greek, Italian, Polish)               |
+| `--fix-patcher` | Keep the in-game patcher working in those languages                  |
+| `--startup-language CODE` | Experimental — see below                                   |
 | `--dry-run`   | Show what would change without writing anything                         |
 | `--force`     | Proceed even if the constants do not hold their stock value             |
 | `--restore`   | Restore the executable from its `.bak` backup and exit                  |
@@ -188,6 +194,33 @@ somehow add dubs as well.
 
 This is off by default: pass `--languages` on the command line, or tick
 **Unlock hidden languages** in the GUI.
+
+### If you change language, keep the patcher working
+
+Wizard101 patches itself while you play: it downloads maps, sounds and art when
+it needs them, instead of fetching everything up front. Every time it does, it
+tells the patch server which language it is running.
+
+The North American server only serves English. In any other language it refuses,
+the game shows *"Unable to connect to Wizard101"*, and **quits when you dismiss
+that message** — at a random moment, mid-session. While it lasts, no missing file
+can be downloaded either.
+
+`--fix-patcher` makes that one request always say English, while the game keeps
+the language you picked: the two go through separate paths inside the client. In
+the GUI the box is ticked by default. Besides the game no longer closing itself,
+the on-demand downloads start working again.
+
+### Dubbed audio (experimental)
+
+The community's dubbed archives are loaded by the same mechanism that loads
+translated text, but that mechanism is set up before the client switches to your
+language, so the dubbed archives are never picked up. `--startup-language CODE`
+starts the client in that language instead of English, which should let them
+load.
+
+This one is **unverified** — it is offered because the analysis points that way,
+not because it has been seen to work — so it is command-line only.
 
 ## Backup
 

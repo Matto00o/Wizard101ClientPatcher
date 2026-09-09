@@ -13,13 +13,16 @@ It's also possible to modify the mouse wheel speed divisor to make
 zoom faster/slower, default value is 3.5. Higher number makes zoom slower.
 
 Optionally it can also unlock the languages that the settings screen
-hides (Greek, Italian and Polish) -- see LANGUAGE UNLOCK below.
+hides (Greek, Italian and Polish) -- see LANGUAGE UNLOCK below -- and
+keep the in-game patcher from closing the game when you play in one of
+them -- see IN-GAME PATCHER FIX.
 
 Run with no arguments for a small GUI, or from the command line:
 
     python w101_patch.py WizardGraphicalClient.exe
     python w101_patch.py WizardGraphicalClient.exe --max 1000
     python w101_patch.py WizardGraphicalClient.exe --languages
+    python w101_patch.py WizardGraphicalClient.exe --fix-patcher
     python w101_patch.py WizardGraphicalClient.exe --dry-run
     python w101_patch.py WizardGraphicalClient.exe --restore
 
@@ -118,6 +121,74 @@ LANG_NEW_DISP = 0xE7       # -0x19 -> 7 entries
 LANG_STRIDE = 0x20         # sizeof(std::string), also the starting offset
 LANGUAGES = ["INVALID", "en-US", "fr", "de", "es", "el", "it", "pl"]
 LANG_UNLOCKED = "Greek, Italian and Polish"
+
+# ---------------------------------------------------------------------------
+# IN-GAME PATCHER FIX
+# ---------------------------------------------------------------------------
+#
+# The client keeps patching itself while you play: it fetches maps, sounds and
+# art on demand instead of downloading everything up front. Each time, it asks
+# the patch server for a file list and tells it which language it is running.
+#
+# The North American server only serves en-US. For any other language it answers
+# with the string "ERROR1" in the Locale field, the client reports
+#
+#     Received MSG_LATEST_FILE_LIST_V2 - Locale (it) not supported by the server
+#     OnPatchFailed(), errorCode = 19
+#
+# shows "Unable to connect to Wizard101", and quits the game when you dismiss
+# it. So playing in a non-English language costs you the session, at a random
+# moment, and no missing file can ever be downloaded.
+#
+# The request is built by handing three things to the field setter: the field,
+# a pointer to the language string, and its length. Replacing the pointer and
+# the length with a constant "en-US" makes the patch server happy while the
+# rest of the game keeps the language you chose -- assets go through
+# LocaleManager, which is a separate path and is left untouched.
+#
+#     lea  rdx,[rdi+0x21408]      the patcher's own locale string
+#     cmpq $0x10,[rdi+0x21420]    short (inline) or long (heap)?
+#     jb   +7
+#     mov  rdx,[rdi+0x21408]
+#     mov  r8,[rdi+0x21418]       its length
+#                              ->
+#     lea  rdx,[rip+X]            a constant "en-US"
+#     mov  r8d,5
+#     nop ...                     padding up to the call
+#
+PATCHER_SITE_PATTERN = (
+    "48 8D 97 08 14 02 00 48 83 BF 20 14 02 00 10 72 07 "
+    "48 8B 97 08 14 02 00 4C 8B 87 18 14 02 00"
+)
+PATCHER_DONE_PATTERN = "48 8D 15 ?? ?? ?? ?? 41 B8 05 00 00 00 90"
+PATCHER_LOCALE = b"en-US"
+
+# ---------------------------------------------------------------------------
+# STARTUP LANGUAGE  (experimental)
+# ---------------------------------------------------------------------------
+#
+# LocaleManager::Initialize maps the localized wads -- the ones declared in
+# Data/GameData/Overrides.xml, which include the spoken dialogue archives --
+# and it runs before the language is switched to yours:
+#
+#     LocaleManager::Initialize
+#     LOCALE = en-US
+#     LOCALE = it            <- too late, the mapping is already built
+#
+# Text still ends up translated because the string table is reloaded when the
+# language changes, and because "Root" is hardcoded in that function. Dialogue
+# audio has no such second chance, which is why community dub wads never load.
+#
+# Changing the default language LocaleManager starts with should make it map
+# the dubbed archives from the beginning. The literal is assigned through a
+# function that measures the string itself, so a shorter code is safe, and it
+# is referenced from this one place in the whole executable.
+#
+# UNVERIFIED: this has not been confirmed to actually make dubs play.
+#
+STARTUP_ANCHOR = b"LocaleManager::Initialize\x00\x00\x00"
+STARTUP_DEFAULT = b"en-US"
+STARTUP_ROOM = 6                  # bytes available for the code plus its NUL
 
 # Where the game usually sits, relative to the root of a Windows drive.
 GAME_SUBPATHS = [
@@ -362,6 +433,77 @@ def locate_language(data):
     )
 
 
+def find_pattern_sites(data, pattern_text):
+    """Every offset where the wildcard pattern matches."""
+    pat = parse_pattern(pattern_text)
+    return [i for i in range(len(data) - len(pat)) if match_at(data, i, pat)]
+
+
+def locate_patcher(pe, data):
+    """Locate the patch request builder.
+
+    Returns (file_offset, replacement_bytes) for a stock executable, or
+    (None, None) when the fix is already in place. Raises RuntimeError if
+    the site is missing or ambiguous.
+    """
+    if find_pattern_sites(data, PATCHER_DONE_PATTERN):
+        return None, None
+
+    sites = find_pattern_sites(data, PATCHER_SITE_PATTERN)
+    if len(sites) != 1:
+        raise RuntimeError(
+            f"Found {len(sites)} matches for the patch request builder -- "
+            "expected exactly one. The executable may be from a very "
+            "different version."
+        )
+    off = sites[0]
+
+    # Any "en-US" literal will do, as long as it is not the one
+    # LocaleManager starts from -- that one may be rewritten below.
+    lit = data.find(b"\x00" + PATCHER_LOCALE + b"\x00")
+    if lit == -1:
+        raise RuntimeError("No 'en-US' literal to point the request at.")
+    lit += 1
+
+    room = len(parse_pattern(PATCHER_SITE_PATTERN))
+    disp = pe.off_to_va(lit) - (pe.off_to_va(off) + 7)
+    new = (b"\x48\x8d\x15" + struct.pack("<i", disp)
+           + b"\x41\xb8" + struct.pack("<I", len(PATCHER_LOCALE)))
+    return off, new + b"\x90" * (room - len(new))
+
+
+def locate_startup_language(data):
+    """Return (file_offset, current_code) for LocaleManager's default.
+
+    The anchor string appears more than once -- one copy is followed by the
+    default language, another by the hardcoded "Root" wad name -- so the
+    match is only accepted when what follows really is a language code.
+    """
+    sites, pos = [], 0
+    while True:
+        pos = data.find(STARTUP_ANCHOR, pos)
+        if pos == -1:
+            break
+        off = pos + len(STARTUP_ANCHOR)
+        blob = bytes(data[off:off + STARTUP_ROOM])
+        code = blob.split(b"\x00")[0].decode("latin-1")
+        if code in LANGUAGES[1:] and blob[len(code)] == 0:
+            sites.append((off, code))
+        pos += 1
+
+    if not sites:
+        raise RuntimeError(
+            "LocaleManager's default language not found. The executable may "
+            "be from a very different version."
+        )
+    if len(sites) > 1:
+        raise RuntimeError(
+            f"Found {len(sites)} candidates for LocaleManager's default "
+            "language -- ambiguous, aborting."
+        )
+    return sites[0]
+
+
 # ---------------------------------------------------------------------------
 # Core operations (shared by CLI and GUI)
 # ---------------------------------------------------------------------------
@@ -370,6 +512,7 @@ REPORT_ORDER = ["max_threshold", "max_value", "min_threshold", "min_value", "spe
 
 
 def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
+              fix_patcher=False, startup_language=None,
               dry_run=False, force=False, log=print, summary=None):
     """Analyze and optionally patch the executable. Returns True on success.
 
@@ -381,14 +524,19 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         speed_changed, old_speed    -- speed divisor did / would change
         languages_changed           -- language count did / would change
         languages_already_unlocked  -- languages were requested but already unlocked
-        backup_created               -- a new .bak was written this run
+        patcher_fixed               -- patch request did / would be pinned to en-US
+        patcher_already_fixed       -- the fix was already in place
+        startup_changed, old_startup -- LocaleManager's default language
+        backup_created              -- a new .bak was written this run
     """
     if summary is not None:
         summary.clear()
         summary.update(camera_changed=False, old_max=None,
-                        speed_changed=False, old_speed=None,
-                        languages_changed=False, languages_already_unlocked=False,
-                        backup_created=False)
+                       speed_changed=False, old_speed=None,
+                       languages_changed=False, languages_already_unlocked=False,
+                       patcher_fixed=False, patcher_already_fixed=False,
+                       startup_changed=False, old_startup=None,
+                       backup_created=False)
 
     exe = Path(exe)
     if not exe.is_file():
@@ -413,6 +561,28 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
             log(f"[!] {e}")
             log("    Nothing was written. Re-run without the language option "
                 "to patch the camera only.")
+            return False
+
+    patcher = None
+    if fix_patcher:
+        try:
+            patcher = locate_patcher(pe, data)
+        except RuntimeError as e:
+            log(f"[!] {e}")
+            log("    Nothing was written. Re-run without the patcher fix.")
+            return False
+
+    startup = None
+    if startup_language is not None:
+        try:
+            startup = locate_startup_language(data)
+        except RuntimeError as e:
+            log(f"[!] {e}")
+            log("    Nothing was written. Re-run without the startup language.")
+            return False
+        if len(startup_language.encode()) >= STARTUP_ROOM:
+            log(f"[!] '{startup_language}' does not fit in the "
+                f"{STARTUP_ROOM - 1} bytes available.")
             return False
 
     log(f"[*] ImageBase : {pe.image_base:#x}")
@@ -450,6 +620,7 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
             if abs(cur - VANILLA_MIN) > FLOAT_TOL:
                 log(f"[!] Warning: {key} is {cur:g} instead of {VANILLA_MIN:g}.")
 
+    # (key, offset, old bytes, new bytes, human-readable change)
     byte_targets = []
     if lang is not None:
         off, disp = lang
@@ -459,7 +630,33 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
             if summary is not None:
                 summary["languages_already_unlocked"] = True
         else:
-            byte_targets.append(("language_count", off, disp, LANG_NEW_DISP))
+            byte_targets.append((
+                "language_count", off, bytes([disp]), bytes([LANG_NEW_DISP]),
+                f"{lang_entries_for(disp)} -> {lang_entries_for(LANG_NEW_DISP)} entries"))
+
+    if patcher is not None:
+        off, blob = patcher
+        if off is None:
+            log("[*] The in-game patcher already asks for "
+                f"{PATCHER_LOCALE.decode()}: nothing to do.")
+            if summary is not None:
+                summary["patcher_already_fixed"] = True
+        else:
+            byte_targets.append((
+                "patch_request", off, bytes(data[off:off + len(blob)]), blob,
+                f"language sent to the patch server -> {PATCHER_LOCALE.decode()}"))
+
+    if startup is not None:
+        off, code = startup
+        want = startup_language.encode()
+        if code == startup_language:
+            log(f"[*] LocaleManager already starts in '{code}': nothing to do.")
+        else:
+            old = bytes(data[off:off + STARTUP_ROOM])
+            byte_targets.append((
+                "startup_language", off, old,
+                want + b"\x00" * (STARTUP_ROOM - len(want)),
+                f"startup language {code} -> {startup_language}"))
 
     if speed is not None:
         if "speed_div" not in found:
@@ -484,10 +681,13 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         old_b = struct.pack("<f", old).hex(" ").upper()
         new_b = struct.pack("<f", new).hex(" ").upper()
         log(f"      {key:<17} @ {off:#010x}   {old:g} -> {new:g}   [{old_b}] -> [{new_b}]")
-    for key, off, old, new in byte_targets:
-        log(f"      {key:<17} @ {off:#010x}   "
-            f"{lang_entries_for(old)} -> {lang_entries_for(new)} entries   "
-            f"[{old:02X}] -> [{new:02X}]")
+    for key, off, old, new, what in byte_targets:
+        log(f"      {key:<17} @ {off:#010x}   {what}")
+        if len(old) <= 8:
+            log(f"      {'':<17}   [{old.hex(' ').upper()}] -> "
+                f"[{new.hex(' ').upper()}]")
+        else:
+            log(f"      {'':<17}   {len(new)} bytes rewritten")
     log("")
 
     # These changes are real whether or not they get written -- a dry run
@@ -500,8 +700,12 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         if "speed_div" in was:
             summary["speed_changed"] = True
             summary["old_speed"] = was["speed_div"]
-        if byte_targets:
-            summary["languages_changed"] = True
+        done = {key for key, *_ in byte_targets}
+        summary["languages_changed"] = "language_count" in done
+        summary["patcher_fixed"] = "patch_request" in done
+        summary["startup_changed"] = "startup_language" in done
+        if startup is not None:
+            summary["old_startup"] = startup[1]
 
     if dry_run:
         log("[=] Dry run: nothing was written.")
@@ -524,8 +728,8 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
     # --- write ---
     for _key, off, _old, new in targets:
         struct.pack_into("<f", data, off, new)
-    for _key, off, _old, new in byte_targets:
-        data[off] = new
+    for _key, off, _old, new, _what in byte_targets:
+        data[off:off + len(new)] = new
 
     try:
         exe.write_bytes(bytes(data))
@@ -542,10 +746,17 @@ def run_patch(exe, new_max=DEFAULT_NEW_MAX, speed=None, languages=False,
         log(f"[+] Done. Maximum camera distance: {old_max:g} -> {new_max:g}")
     if "speed_div" in was:
         log(f"[+] Done. Zoom speed divisor: {was['speed_div']:g} -> {speed:g}")
-    if byte_targets:
+    done = {key for key, *_ in byte_targets}
+    if "language_count" in done:
         log(f"[+] Done. The settings screen now lists all "
             f"{lang_entries_for(LANG_NEW_DISP)} languages: "
             f"{', '.join(LANGUAGES[1:])}.")
+    if "patch_request" in done:
+        log(f"[+] Done. The in-game patcher now asks the server for "
+            f"{PATCHER_LOCALE.decode()}, so it stops failing -- and quitting "
+            "the game -- when you play in another language.")
+    if "startup_language" in done:
+        log(f"[+] Done. LocaleManager now starts in '{startup_language}'.")
     return True
 
 
@@ -580,13 +791,14 @@ def launch_gui():
 
     root = tk.Tk()
     root.title("Wizard101 Client Patcher")
-    root.geometry("760x230")
-    root.minsize(700, 230)
+    root.geometry("760x260")
+    root.minsize(700, 260)
 
     path_var = tk.StringVar()
     max_var = tk.StringVar(value=str(int(DEFAULT_NEW_MAX)))
     speed_var = tk.StringVar()
     lang_var = tk.BooleanVar(value=False)
+    patcher_var = tk.BooleanVar(value=True)
     force_var = tk.BooleanVar(value=False)
 
     found_games = find_game_paths()
@@ -624,6 +836,13 @@ def launch_gui():
                    variable=lang_var).pack(side="left")
     tk.Checkbutton(frm_opt2, text="Force", variable=force_var).pack(side="left", padx=12)
 
+    frm_opt3 = tk.Frame(root, padx=10)
+    frm_opt3.pack(fill="x", pady=(2, 0))
+    tk.Checkbutton(frm_opt3,
+                   text="Keep the in-game patcher working in other languages "
+                        "(stops the game closing by itself)",
+                   variable=patcher_var).pack(side="left")
+
     # --- status line (always visible) ---
     status_var = tk.StringVar(value="Select the game executable, then click Analyze or Apply patch.")
     status_lbl = tk.Label(root, textvariable=status_var, anchor="w",
@@ -651,11 +870,11 @@ def launch_gui():
         if show:
             log_frame.pack(fill="both", expand=True, pady=(0, 10))
             btn_log.config(text="Hide details")
-            root.geometry("760x590")
+            root.geometry("760x620")
         else:
             log_frame.pack_forget()
             btn_log.config(text="Show details")
-            root.geometry("760x230")
+            root.geometry("760x260")
 
     def log(msg=""):
         log_box.insert("end", str(msg) + "\n")
@@ -701,6 +920,7 @@ def launch_gui():
         set_status("Working...", None)
         summary = {}
         ok = run_patch(path, new_max=new_max, speed=speed, languages=languages,
+                       fix_patcher=patcher_var.get(),
                        dry_run=dry_run, force=force_var.get(), log=log,
                        summary=summary)
         if not ok:
@@ -725,6 +945,11 @@ def launch_gui():
                            else "Hidden languages unlocked.")
         elif languages and summary["languages_already_unlocked"]:
             notes.append("Hidden languages were already unlocked.")
+        if summary["patcher_fixed"]:
+            changes.append("In-game patcher would be fixed." if dry_run
+                           else "In-game patcher fixed.")
+        elif patcher_var.get() and summary["patcher_already_fixed"]:
+            notes.append("The in-game patcher was already fixed.")
 
         if not changes:
             tail = (" " + " ".join(notes)) if notes else ""
@@ -792,6 +1017,14 @@ def main():
     ap.add_argument("--languages", action="store_true",
                     help="also unlock the languages hidden in the settings "
                          f"screen ({LANG_UNLOCKED})")
+    ap.add_argument("--fix-patcher", action="store_true",
+                    help="stop the in-game patcher from failing, and closing "
+                         "the game, when you play in a language the server "
+                         "does not serve")
+    ap.add_argument("--startup-language", metavar="CODE", default=None,
+                    help="experimental: language LocaleManager starts in, "
+                         f"one of {', '.join(LANGUAGES[1:])} -- may be needed "
+                         "for community dubbed audio to load")
     ap.add_argument("--dry-run", action="store_true",
                     help="show what would change without writing anything")
     ap.add_argument("--force", action="store_true",
@@ -808,8 +1041,12 @@ def main():
     if args.restore:
         return 0 if run_restore(args.exe) else 1
 
+    if args.startup_language is not None and args.startup_language not in LANGUAGES[1:]:
+        ap.error(f"--startup-language must be one of {', '.join(LANGUAGES[1:])}")
+
     ok = run_patch(args.exe, new_max=args.max, speed=args.speed,
-                   languages=args.languages,
+                   languages=args.languages, fix_patcher=args.fix_patcher,
+                   startup_language=args.startup_language,
                    dry_run=args.dry_run, force=args.force)
     if ok and not args.dry_run:
         print(f'    To undo: python {Path(sys.argv[0]).name} "{args.exe}" --restore')
